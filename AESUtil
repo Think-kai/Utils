@@ -1,0 +1,147 @@
+package com.karrytech.crm.base.model.util;
+
+import com.karrytech.crm.base.model.consts.ISysConst;
+import com.karrytech.crm.base.model.exception.BizException;
+import org.bouncycastle.util.Times;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import sun.misc.BASE64Decoder;
+import sun.misc.BASE64Encoder;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.DigestException;
+import java.security.MessageDigest;
+import java.sql.Timestamp;
+import java.util.Arrays;
+import java.util.Base64;
+
+public class AESUtil {
+    private static final Logger logger = LoggerFactory.getLogger(AESUtil.class);
+
+    public static String decryptText(String cipherText, String secret) {
+        String decryptedText = null;
+        byte[] cipherData = java.util.Base64.getDecoder().decode(cipherText);
+        byte[] saltData = Arrays.copyOfRange(cipherData, 8, 16);
+        try {
+            MessageDigest md5 = MessageDigest.getInstance("MD5");
+            final byte[][] keyAndIV = GenerateKeyAndIV(32, 16, 1, saltData, secret.getBytes(StandardCharsets.UTF_8), md5);
+            SecretKeySpec key = new SecretKeySpec(keyAndIV[0], "AES");
+            IvParameterSpec iv = new IvParameterSpec(keyAndIV[1]);
+
+            byte[] encrypted = Arrays.copyOfRange(cipherData, 16, cipherData.length);
+            Cipher aesCBC = Cipher.getInstance("AES/CBC/PKCS5Padding");
+            aesCBC.init(Cipher.DECRYPT_MODE, key, iv);
+            byte[] decryptedData = aesCBC.doFinal(encrypted);
+            decryptedText = new String(decryptedData, StandardCharsets.UTF_8);
+            return decryptedText;
+        } catch (Exception ex) {
+            logger.error("AESUtil decryptText error: " + ex.getMessage(), ex);
+            return decryptedText;
+        }
+    }
+
+    public static byte[][] GenerateKeyAndIV(int keyLength, int ivLength, int iterations, byte[] salt, byte[] password, MessageDigest md) {
+        int digestLength = md.getDigestLength();
+        int requiredLength = (keyLength + ivLength + digestLength - 1) / digestLength * digestLength;
+        byte[] generatedData = new byte[requiredLength];
+        int generatedLength = 0;
+
+        try {
+            md.reset();
+
+            // Repeat process until sufficient data has been generated
+            while (generatedLength < keyLength + ivLength) {
+
+                // Digest data (last digest if available, password data, salt if available)
+                if (generatedLength > 0)
+                    md.update(generatedData, generatedLength - digestLength, digestLength);
+                md.update(password);
+                if (salt != null)
+                    md.update(salt, 0, 8);
+                md.digest(generatedData, generatedLength, digestLength);
+
+                // additional rounds
+                for (int i = 1; i < iterations; i++) {
+                    md.update(generatedData, generatedLength, digestLength);
+                    md.digest(generatedData, generatedLength, digestLength);
+                }
+
+                generatedLength += digestLength;
+            }
+
+            // Copy key and IV into separate byte arrays
+            byte[][] result = new byte[2][];
+            result[0] = Arrays.copyOfRange(generatedData, 0, keyLength);
+            if (ivLength > 0)
+                result[1] = Arrays.copyOfRange(generatedData, keyLength, keyLength + ivLength);
+
+            return result;
+
+        } catch (DigestException e) {
+            logger.error("AESUtil decryptText error: " + e.getMessage(), e);
+            throw new RuntimeException(e);
+        } finally {
+            // Clean out temporary data
+            Arrays.fill(generatedData, (byte) 0);
+        }
+    }
+
+    public static String decryptText4time(String cipherText, Timestamp current) {
+
+        String decryptText = AESUtil.decryptText(cipherText, ISysConst.AES_SERCRET);
+
+        //当前Str 解密之后的格式为 employeeId + "|" + 时间戳
+        String[] splitArr = decryptText.split("\\|");
+        //校验时间戳
+        Timestamp timestamp = DateUtil.toDateAuto(splitArr[1]);
+        if (timestamp.compareTo(DateUtil.plusMin(current,-10))> 0 &&
+                timestamp.compareTo(current) < 0
+        ) { //时间戳必须在十分钟以内 否则报错
+        } else {
+            throw new BizException("参数不正确！");
+        }
+
+        return splitArr[0];
+    }
+
+    public static String aesEncrypt(String datastr, String secret) {
+        try {
+            byte[] input = datastr.getBytes();
+            // 以下两个变量不可修改，否则java加密的，node无法解密
+            byte[] saltData = "DFބf$t:".getBytes();
+            byte[] preData = "Salted__".getBytes();
+            MessageDigest md5 = MessageDigest.getInstance("MD5");
+            final byte[][] keyAndIV = GenerateKeyAndIV(32, 16, 1, saltData, secret.getBytes(StandardCharsets.UTF_8), md5);
+
+            SecretKeySpec key = new SecretKeySpec(keyAndIV[0], "AES");
+
+            IvParameterSpec iv = new IvParameterSpec(keyAndIV[1]);
+            Cipher aesCBC = Cipher.getInstance("AES/CBC/PKCS5Padding");
+
+            aesCBC.init(Cipher.ENCRYPT_MODE, key, iv);
+
+            byte[] encrypt = aesCBC.doFinal(input);
+            byte[] encryptedData = addBytes(saltData, encrypt);
+            return java.util.Base64.getEncoder().encodeToString(addBytes(preData, encryptedData));
+        } catch (Exception e) {
+            logger.error("aesEncrypt error.param={}", datastr, e);
+            return null;
+        }
+    }
+
+    public static byte[] addBytes(byte[] data1, byte[] data2) {
+
+        byte[] data3 = new byte[data1.length + data2.length];
+
+        System.arraycopy(data1, 0, data3, 0, data1.length);
+
+        System.arraycopy(data2, 0, data3, data1.length, data2.length);
+
+        return data3;
+
+    }
+}
